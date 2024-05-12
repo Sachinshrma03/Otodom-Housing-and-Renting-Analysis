@@ -1,0 +1,75 @@
+-- Creating stage in demo_wh
+Create or replace stage otodom_stage;
+
+-- Creating file format to put data in stage
+Create or replace file_format json_format
+type = json
+strip_outer_array = True;
+
+-- getting the data into the stage (use snowSQL to process this query as it won't work here)
+PUT file://C:\Users\Sachin's PC\OneDrive\Documents\Project\data\otodom_data.json @otodom_stage;
+
+--Creating the data_dump table into which the data is to be copied from the stage
+CREATE table otodom_data_dump
+(
+    json_data variant
+);
+
+SELECT * From otodom_data_dump;
+
+-- Copying data into otodom_dump and skipping files with errors
+COPY INTO otodom_data_dump
+from @otodom_stage
+on_error = 'skip_file';
+
+
+-- Deleting the empty records from the otodom_data_dump
+delete from otodom_data_dump
+where json_data:dateCreated = '';
+
+
+-- Flattening otodom_data_dump into new table
+CREATE OR REPLACE TABLE otodom_data_flatten
+as
+Select nullif(replace(json_data:agency,'"'),'')::string as agency
+, nullif(replace(json_data:areaInSquareMeters,'"'),'')::float as area_is_sq_meters
+, replace(json_data:city,'"')::string as city
+, to_date(replace(json_data:dateCreated,'"'),'DD-MM-YYYY')::date as posted_on
+, replace(json_data:description,'"')::string as description
+, replace(json_data:estate,'"')::string as property_type
+, replace(json_data:id,'"')::int as id
+, replace(json_data:isPrivateOwner,'"')::string as is_private_property
+, replace(json_data:locations,'"')::string as location
+, replace(json_data:province,'"')::string as province
+, nullif(replace(json_data:rentPrice, '"'), '')::string AS rent_price
+, replace(json_data:roomsNumber,'"')::string as num_of_rooms
+, replace(json_data:title,'"')::string as title
+, nullif(replace(json_data:totalPrice, '"'), '')::string as total_price
+, replace(json_data:transaction,'"')::string as transaction
+from otodom_data_dump;
+where total_price;
+
+
+-- Creating final transformed table with all the required fields
+Create or replace table otodom_data_transformed
+as
+with cte as 
+(
+select ot.*
+    , case when rent_price like '%PLN%' then try_to_number(replace(rent_price,' PLN',''),'999,999,999.99')
+            when rent_price like '%EUR%' then try_to_number(replace(rent_price,' EUR',''),'999,999,999.99')* 4.43
+        end as new_rent_price
+    , case when total_price like '%PLN%' then try_to_number(replace(total_price,' PLN',''),'999,999,999.99')
+            when total_price like '%EUR%' then try_to_number(replace(total_price,' EUR',''),'999,999,999.99')* 4.43
+        end as new_total_price
+    , trans.title_eng
+from otodom_data_flatten as ot
+left join otodom_data_flatten_translate as trans
+On trans.id = ot.id
+)
+
+Select *
+        , case when lower(title_eng) like '%apartment%' or lower(title_eng) like '%studio%' then 'apartment'
+                else 'non apartment'
+        end as appartment_flag
+from cte;
